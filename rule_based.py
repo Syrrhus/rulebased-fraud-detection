@@ -2,39 +2,78 @@ import pandas as pd
 
 # d) FI and FX instrument trades & All PHASE2 products (Sheet Name -> Phase1 & Phase2 products(phase_ref))
 # matching the excel trade columns to phase 1 and 2 reference sheet
-def filter_phase_products(trades: pd.DataFrame, phase_ref: pd.DataFrame) -> pd.DataFrame:
-    trades.columns = trades.columns.str.strip().str.lower()
-    phase_ref.columns = phase_ref.columns.str.strip().str.lower()
+PHASE1_PRODUCTS = [
+    ("CURR", "FXD", "FXD"),      # Spot-Forward
+    ("CURR", "FXD", "SWLEG"),    # Forex-Swap Leg
+    ("IRD", "BOND", ""),         # Bonds
+    ("IRD", "BOND", "CALL"),     # Callable Bonds
+]
 
-    trades["product_key"] = (
-        trades["trade_typology"].fillna('') + '|' +
-        trades["trade_grp"].fillna('') + '|' +
+PHASE2_PRODUCTS = [
+    # Commodity
+    ("COM", "ASIAN", ""),
+    ("COM", "FUT", ""),
+    ("COM", "OFUT", "LST"),
+    ("COM", "OPT", "SMP"),
+    ("COM", "SWAP", ""),
+    ("COM", "SWAP", "CLR"),
+    # FX Option
+    ("CURR", "OPT", "BAR"),
+    ("CURR", "OPT", "FLEX"),
+    ("CURR", "OPT", "RBT"),
+    ("CURR", "OPT", "SMP"),
+    ("CURR", "OPT", "SMPS"),
+    # Equity and Futures
+    ("EQD", "EQS", ""),
+    ("EQD", "EQUIT", ""),
+    ("EQD", "EQUIT", "FWD"),
+    ("EQD", "FUT", ""),
+    ("EQD", "OPT", "ACC"),
+    ("EQD", "OPT", "ASI"),
+    ("EQD", "OPT", "BAR"),
+    ("EQD", "OPT", "CRAC"),
+    ("EQD", "OPT", "FLEX"),
+    ("EQD", "OPT", "ORG"),
+    ("EQD", "OPT", "OTC"),
+    ("EQD", "WARNT", ""),
+    # Interest Derivatives
+    ("IRD", "CF", ""),
+    ("IRD", "CS", ""),
+    ("IRD", "IRS", ""),
+    ("IRD", "LFUT", ""),
+    ("IRD", "OSWP", ""),
+    ("IRD", "REPO", ""),
+    ("IRD", "REPO", "REPO"),
+    ("IRD", "SFUT", ""),
+    # Money Markets
+    ("IRD", "LN_BR", ""),
+    # Credit
+    ("CRD", "CDS", ""),
+    ("CRD", "RTRS", ""),
+]
+
+EXCLUDE_PRODUCTS = [("EQD", "OPT", "AUTOC")]
+
+def filter_phase_products(trades: pd.DataFrame) -> pd.DataFrame:
+    trades.columns = trades.columns.str.strip().str.lower()
+
+    trades["key"] = (
+        trades["trade_typology"].fillna('') + "|" +
+        trades["trade_grp"].fillna('') + "|" +
         trades["trade_type"].fillna('')
     ).str.upper()
 
-    phase_ref["product_key"] = (
-        phase_ref["m_trn_fmly"].fillna('') + '|' +
-        phase_ref["m_trn_grp"].fillna('') + '|' +
-        phase_ref["m_trn_type"].fillna('')
-    ).str.upper()
+    # Build valid keys and exclude list
+    valid_keys = [f"{a}|{b}|{c}" for (a, b, c) in PHASE1_PRODUCTS + PHASE2_PRODUCTS]
+    exclude_keys = [f"{a}|{b}|{c}" for (a, b, c) in EXCLUDE_PRODUCTS]
 
-    exclude_keys = ["EQD|OPT|AUTOC"]  
-
-    valid_ref = phase_ref[
-        (
-            (phase_ref["asset class"].str.upper().isin(["FX", "FIXED INCOME"])) |
-            (phase_ref["phase"].str.upper() == "PHASE 2")
-        ) &
-        (~phase_ref["product_key"].isin(exclude_keys))
-    ]
-
-    valid_keys = valid_ref["product_key"].unique()
-
-    return trades[trades["product_key"].isin(valid_keys)].copy()
+    # Apply filters
+    mask = trades["key"].isin(valid_keys) & (~trades["key"].isin(exclude_keys))
+    return trades[mask].copy()
 
 
 
-def classify(df, phase_ref):
+def detect_floor_ceiling(df):
 
     df_1=df[df["internal"].upper()=="N" & df_1["trade_type"]!= "AUTOC"]# single day buy trade, FI, FX, all product?
     df_1["Date_time"]= pd.to_datetime(df['deal_date'] + ' ' + df['trade_insertion_time'])
@@ -43,8 +82,6 @@ def classify(df, phase_ref):
     daily_close = df_1.groupby('Date')['notional'].last().rename('Close_Price').reset_index()
     daily_close['Prev_Close'] = daily_close.groupby('deal_date')['Close_Price'].shift(1)
     df_1 = df_1.merge(daily_close, on='Date', how='left')
-
-    
 
     #floor ceiling 
     filtered_FX = df_1[(df_1["trade_type"].upper() == "FXD" | df_1["trade_type"].upper()
@@ -65,7 +102,7 @@ def classify(df, phase_ref):
     df = df[df["trade_count"] >= 3]
 
 
-    #Ramp
+def detect_ramping(df):
     x_ramp=35
     daily_first = df_1.groupby('Date')['notional'].first().rename('Open_Price').reset_index()
     df_1 = df_1.merge(daily_first, on='Date', how='left')
@@ -74,5 +111,30 @@ def classify(df, phase_ref):
     
 
 
-    
+def detect_all_fraud(trades_df):
+
+    df = filter_phase_products(trades_df)
+    trades_df["fraud_type"] = "None"
+
+    floor_ceiling = detect_floor_ceiling(df)
+    # ramping = detect_ramping(df)
+
+    frauds = pd.concat([floor_ceiling, ramping], ignore_index=True).drop_duplicates("trade_id")
+
+    merged = trades_df.merge(frauds, on="trade_id", how="left", suffixes=("", "_detected"))
+    merged["fraud_type"] = merged["fraud_type_detected"].fillna(merged["fraud_type"])
+    merged.drop(columns=["fraud_type_detected"], inplace=True)
+    # merge data with new fraud_type column
+
+    return merged
+
+
+if __name__ == "__main__":
+    trade_file = "sample data.xlsx"
+    trades = pd.read_excel(trade_file)
+
+    classified = detect_all_fraud(trades)
+    classified.to_excel("classified_trades.xlsx", index=False)
+
+    print(f" Classified {len(classified)} trades into fraud types.")
 
