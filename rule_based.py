@@ -58,16 +58,14 @@ def filter_phase_products(trades: pd.DataFrame) -> pd.DataFrame:
     trades.columns = trades.columns.str.strip().str.lower()
 
     trades["key"] = (
-        trades["trade_typology"].fillna('') + "|" +
+        trades["trade_fmly"].fillna('') + "|" +
         trades["trade_grp"].fillna('') + "|" +
         trades["trade_type"].fillna('')
     ).str.upper()
 
-    # Build valid keys and exclude list
     valid_keys = [f"{a}|{b}|{c}" for (a, b, c) in PHASE1_PRODUCTS + PHASE2_PRODUCTS]
     exclude_keys = [f"{a}|{b}|{c}" for (a, b, c) in EXCLUDE_PRODUCTS]
 
-    # Apply filters
     mask = trades["key"].isin(valid_keys) & (~trades["key"].isin(exclude_keys))
     return trades[mask].copy()
 
@@ -75,19 +73,26 @@ def filter_phase_products(trades: pd.DataFrame) -> pd.DataFrame:
 
 def detect_floor_ceiling(df):
 
-    df_1=df[df["internal"].upper()=="N" & df_1["trade_type"]!= "AUTOC"]# single day buy trade, FI, FX, all product?
-    df_1["Date_time"]= pd.to_datetime(df['deal_date'] + ' ' + df['trade_insertion_time'])
+    df_1 = df[
+    (df["internal"].str.upper() == "N") &
+    (df["trade_type"].str.upper() != "AUTOC")
+].copy()
+# single day buy trade, FI, FX, all product?
+    df_1["Date_time"] = pd.to_datetime(
+        df["deal_date"].astype(str) + " " + df["trade_insertion_time"].astype(str),
+        errors="coerce"
+    )
 
     df_1=df_1.sort_values("Date_time").reset_index(drop=True)
-    daily_close = df_1.groupby('Date')['notional'].last().rename('Close_Price').reset_index()
+    daily_close = df_1.groupby('deal_date')['notional'].last().rename('Close_Price').reset_index()
     daily_close['Prev_Close'] = daily_close.groupby('deal_date')['Close_Price'].shift(1)
-    df_1 = df_1.merge(daily_close, on='Date', how='left')
+    df_1 = df_1.merge(daily_close, on='deal_date', how='left')
 
     #floor ceiling 
-    filtered_FX = df_1[(df_1["trade_type"].upper() == "FXD" | df_1["trade_type"].upper()
+    filtered_FX = df_1[(df_1["trade_type"].str.upper() == "FXD" | df_1["trade_type"].str.upper()
                       == "SWLEG") & df_1["notional"] >= 15000000]
-    filtered_FI = df_1[df_1["trade_type"].upper() == "CALL" | (df_1["trade_type"] == " " & 
-        df_1["trade_grp"].upper() == "BOND") & df_1["notional"] >= 15000000]
+    filtered_FI = df_1[df_1["trade_type"].str.upper() == "CALL" | (df_1["trade_type"] == " " & 
+        df_1["trade_grp"].str.upper() == "BOND") & df_1["notional"] >= 15000000]
 
 
     x_floor=0.5
@@ -97,9 +102,16 @@ def detect_floor_ceiling(df):
     df_1["floor_x"]=df_1.apply(lambda row: 1 if abs(df_1["buy_trade"])<= x_floor else 0, axis=1)
 #still need to include the part on trade<=3 and step 6
 
-    count_df = df.groupby("instrument_id")["trade_id"].count().reset_index(name="trade_count")
-    df = df.merge(count_df, on="instrument_id", how="left")
-    df = df[df["trade_count"] >= 3]
+    count_df = df_1.groupby("instrument_id")["trade_id"].count().reset_index(name="trade_count")
+    df_1 = df_1.merge(count_df, on="instrument_id", how="left")
+    df_1 = df_1[df_1["trade_count"] >= 3]
+
+    if "leg_type" in df_1.columns:
+        df_1 = df_1[df_1["leg_type"].str.upper() != "FARLEG"]
+
+    df_1["fraud_type"] = "Floor_Ceiling"
+    return df_1
+
 
 
 def detect_ramping(df):
