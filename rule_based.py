@@ -85,21 +85,35 @@ def detect_floor_ceiling(df):
 
     df_1=df_1.sort_values("Date_time").reset_index(drop=True)
     daily_close = df_1.groupby('deal_date')['notional'].last().rename('Close_Price').reset_index()
-    daily_close['Prev_Close'] = daily_close.groupby('deal_date')['Close_Price'].shift(1)
+    daily_close['Prev_close'] = daily_close.groupby('deal_date')['Close_Price'].shift(1)
     df_1 = df_1.merge(daily_close, on='deal_date', how='left')
 
     #floor ceiling 
-    filtered_FX = df_1[(df_1["trade_type"].str.upper() == "FXD" | df_1["trade_type"].str.upper()
-                      == "SWLEG") & df_1["notional"] >= 15000000]
-    filtered_FI = df_1[df_1["trade_type"].str.upper() == "CALL" | (df_1["trade_type"] == " " & 
-        df_1["trade_grp"].str.upper() == "BOND") & df_1["notional"] >= 15000000]
+    filtered_FX = df_1[
+    (
+        (df_1["trade_type"].str.upper() == "FXD") |
+        (df_1["trade_type"].str.upper() == "SWLEG")
+    ) &
+    (df_1["notional"] >= 15000000)
+]
 
+    filtered_FI = df_1[
+    (
+        (df_1["trade_type"].str.upper() == "CALL") |
+        (
+            (df_1["trade_type"].str.strip() == "") &
+            (df_1["trade_grp"].str.upper() == "BOND")
+        )
+    ) &
+    (df_1["notional"] >= 30000000)    
+]
+    df_1 = pd.concat([filtered_FX, filtered_FI], ignore_index=True)
 
     x_floor=0.5
 
     #what is the diff between buy trade and sell price
     df_1['buy_trade']=((df_1["notional"]-df_1["Prev_close"])/df_1["Prev_close"])*100
-    df_1["floor_x"]=df_1.apply(lambda row: 1 if abs(df_1["buy_trade"])<= x_floor else 0, axis=1)
+    df_1["floor_x"] = df_1["buy_trade"].abs().le(x_floor).astype(int)
 #still need to include the part on trade<=3 and step 6
 
     count_df = df_1.groupby("instrument_id")["trade_id"].count().reset_index(name="trade_count")
@@ -115,11 +129,30 @@ def detect_floor_ceiling(df):
 
 
 def detect_ramping(df):
+    df["Date_time"]= pd.to_datetime(df['deal_date'] + ' ' + df['trade_insertion_time'])
+
+    df=df.sort_values("Date_time").reset_index(drop=True)
+    daily_close = df.groupby('Date')['notional'].last().rename('Close_Price').reset_index()
+    daily_close['Prev_close'] = daily_close.groupby('deal_date')['Close_Price'].shift(1)
+    df = df.merge(daily_close, on='Date', how='left')
     x_ramp=35
-    daily_first = df_1.groupby('Date')['notional'].first().rename('Open_Price').reset_index()
-    df_1 = df_1.merge(daily_first, on='Date', how='left')
-    df_1['Open_Price'] = df_1['Open_Price'].fillna(df_1['Prev_Close'])
-    rate_ramp= (df_1['rate']-df_1['Open_Price'])*100/df_1['Open_Price']
+    # daily_first = df_1.groupby('Date')['notional'].first().rename('Open_Price').reset_index()
+    # df_1 = df_1.merge(daily_first, on='Date', how='left')
+    # df_1['Open_Price'] = df_1['Open_Price'].fillna(df_1['Prev_Close'])
+    # rate_ramp= (df_1['rate']-df_1['Open_Price'])*100/df_1['Open_Price']
+    rate_ramp= (df['rate']-df['Prev_close'])*100/df['Prev_close']
+    df["ramp"]=df.apply(lambda row: 1 if abs(rate_ramp)<= x_ramp else 0, axis=1)
+    
+def churning(df):
+    df_1=filter_phase_products(df)
+    #df_filtered = df_1.groupby(["Date", "instrument type"]).apply(lambda x: "flag" if   "")
+    df_b = df_1[df_1["buy_sell"] == "B"].copy()
+    df_b["comp"]=zip(df_b["Date"],df_b["instrument type"],df_b["price"])
+    df_s = df_1[df_1["buy_sell"] == "S"].copy()
+    df_s["comp"]=zip(df_s["Date"],df_s["instrument type"],df_s["price"])
+
+    size= min(len(df_b),len(df_s))
+    for i in size:
     
 
 
