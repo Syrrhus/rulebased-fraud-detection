@@ -3,10 +3,10 @@ import pandas as pd
 # d) FI and FX instrument trades & All PHASE2 products (Sheet Name -> Phase1 & Phase2 products(phase_ref))
 # matching the excel trade columns to phase 1 and 2 reference sheet
 PHASE1_PRODUCTS = [
-    ("CURR", "FXD", "FXD"),      # Spot-Forward
-    ("CURR", "FXD", "SWLEG"),    # Forex-Swap Leg
-    ("IRD", "BOND", ""),         # Bonds
-    ("IRD", "BOND", "CALL"),     # Callable Bonds
+    ("CURR", "FXD", "FXD"),   
+    ("CURR", "OPT", "SMP"),   # your FX options
+    ("IRD", "LN_BR", ""),     # your IRD loan/deposits
+    ("IRD", "LN_BR", "SMP"),  # if SMP appears in IRD rows
 ]
 
 PHASE2_PRODUCTS = [
@@ -77,6 +77,8 @@ def detect_floor_ceiling(df):
     (df["internal"].str.upper() == "N") &
     (df["trade_type"].str.upper() != "AUTOC")
 ].copy()
+    print("After internal & AUTOC filter:", len(df_1))
+
 # single day buy trade, FI, FX, all product?
     df_1["Date_time"] = pd.to_datetime(
         df["deal_date"].astype(str) + " " + df["trade_insertion_time"].astype(str),
@@ -109,6 +111,8 @@ def detect_floor_ceiling(df):
 ]
     df_1 = pd.concat([filtered_FX, filtered_FI], ignore_index=True)
 
+    print("After FX/FI size filters:", len(df_1))
+
     x_floor=0.5
 
     #what is the diff between buy trade and sell price
@@ -116,14 +120,16 @@ def detect_floor_ceiling(df):
     df_1["floor_x"] = df_1["buy_trade"].abs().le(x_floor).astype(int)
 #still need to include the part on trade<=3 and step 6
 
-    count_df = df_1.groupby("instrument_id")["trade_id"].count().reset_index(name="trade_count")
-    df_1 = df_1.merge(count_df, on="instrument_id", how="left")
+    count_df = df_1.groupby("instrument_type")["trade_id"].count().reset_index(name="trade_count")
+    df_1 = df_1.merge(count_df, on="instrument_type", how="left")
     df_1 = df_1[df_1["trade_count"] >= 3]
 
     if "leg_type" in df_1.columns:
         df_1 = df_1[df_1["leg_type"].str.upper() != "FARLEG"]
 
     df_1["fraud_type"] = "Floor_Ceiling"
+    print("After trade_count>=3:", len(df_1))
+
     return df_1
 
 
@@ -143,16 +149,16 @@ def detect_ramping(df):
     rate_ramp= (df['rate']-df['Prev_close'])*100/df['Prev_close']
     df["ramp"]=df.apply(lambda row: 1 if abs(rate_ramp)<= x_ramp else 0, axis=1)
     
-def churning(df):
-    df_1=filter_phase_products(df)
-    #df_filtered = df_1.groupby(["Date", "instrument type"]).apply(lambda x: "flag" if   "")
-    df_b = df_1[df_1["buy_sell"] == "B"].copy()
-    df_b["comp"]=zip(df_b["Date"],df_b["instrument type"],df_b["price"])
-    df_s = df_1[df_1["buy_sell"] == "S"].copy()
-    df_s["comp"]=zip(df_s["Date"],df_s["instrument type"],df_s["price"])
+# def churning(df):
+#     df_1=filter_phase_products(df)
+#     #df_filtered = df_1.groupby(["Date", "instrument type"]).apply(lambda x: "flag" if   "")
+#     df_b = df_1[df_1["buy_sell"] == "B"].copy()
+#     df_b["comp"]=zip(df_b["Date"],df_b["instrument type"],df_b["price"])
+#     df_s = df_1[df_1["buy_sell"] == "S"].copy()
+#     df_s["comp"]=zip(df_s["Date"],df_s["instrument type"],df_s["price"])
 
-    size= min(len(df_b),len(df_s))
-    for i in size:
+#     size= min(len(df_b),len(df_s))
+#     for i in size:
     
 
 
@@ -164,7 +170,7 @@ def detect_all_fraud(trades_df):
     floor_ceiling = detect_floor_ceiling(df)
     # ramping = detect_ramping(df)
 
-    frauds = pd.concat([floor_ceiling, ramping], ignore_index=True).drop_duplicates("trade_id")
+    frauds = pd.concat([floor_ceiling], ignore_index=True).drop_duplicates("trade_id")
 
     merged = trades_df.merge(frauds, on="trade_id", how="left", suffixes=("", "_detected"))
     merged["fraud_type"] = merged["fraud_type_detected"].fillna(merged["fraud_type"])
@@ -177,6 +183,13 @@ def detect_all_fraud(trades_df):
 if __name__ == "__main__":
     trade_file = "sample data.xlsx"
     trades = pd.read_excel(trade_file)
+    print(trades.columns)
+    for c in ["trade_fmly", "trade_grp", "trade_type"]:
+        trades[c] = trades[c].astype(str).str.strip().str.upper()
+
+    # print(trades["internal"].unique() if "internal" in trades.columns else "NO internal column")
+    # print(trades["trade_type"].unique())
+
 
     classified = detect_all_fraud(trades)
     classified.to_excel("classified_trades.xlsx", index=False)
